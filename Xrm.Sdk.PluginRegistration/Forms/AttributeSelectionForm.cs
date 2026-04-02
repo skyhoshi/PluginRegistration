@@ -17,7 +17,6 @@
 
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 
 namespace Xrm.Sdk.PluginRegistration.Forms
 {
@@ -38,7 +37,7 @@ namespace Xrm.Sdk.PluginRegistration.Forms
         private CrmOrganization m_org;
         private UpdateImageAttributesDelegate m_updateAttributes;
 
-        private Thread searchThread;
+        private Timer m_filterTimer;
 
         #endregion Private Fields
 
@@ -64,6 +63,15 @@ namespace Xrm.Sdk.PluginRegistration.Forms
 
             m_org = org;
             m_updateAttributes = updateAttributes;
+
+            // debounce timer for filter updates to replace Thread.Abort usage
+            m_filterTimer = new Timer { Interval = 300 };
+            m_filterTimer.Tick += (s, ea) =>
+            {
+                m_filterTimer.Stop();
+                DisplayAttributes();
+            };
+            this.FormClosed += AttributeSelectionForm_FormClosed;
 
             //Create a sorter for the listview. This will allow the list to be sorted by different columns
             lsvAttributes.ListViewItemSorter = new ListViewColumnSorter(0, lsvAttributes.Sorting);
@@ -162,10 +170,11 @@ namespace Xrm.Sdk.PluginRegistration.Forms
             {
                 lsvAttributes.Items.Clear();
 
+                var filter = txtFilter.Text ?? string.Empty;
                 var items = m_attributesList.Where(i =>
-                    txtFilter.Text.Length == 0
-                    || i.Text.ToLower().IndexOf(txtFilter.Text.ToLower(), StringComparison.Ordinal) >= 0
-                    || i.Name.ToLower().IndexOf(txtFilter.Text.ToLower(), StringComparison.Ordinal) >= 0);
+                    filter.Length == 0
+                    || i.Text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0
+                    || i.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
 
                 lsvAttributes.ItemChecked -= lsvAttributes_ItemChecked;
                 lsvAttributes.Items.AddRange(items.ToArray());
@@ -219,9 +228,99 @@ namespace Xrm.Sdk.PluginRegistration.Forms
 
         private void txtFilter_TextChanged(object sender, EventArgs e)
         {
-            searchThread?.Abort();
-            searchThread = new Thread(DisplayAttributes);
-            searchThread.Start();
+            // If the user pasted a comma-separated list of logical names, treat it as a direct selection
+            // rather than normal incremental filtering. This avoids disturbing normal filtering behavior
+            // for other uses of the filter box.
+            try
+            {
+                if (TrySelectAttributesFromPaste(txtFilter.Text))
+                {
+                    // Clear the filter text after handling the paste so normal filtering is not performed
+                    // and the user sees the selection result immediately.
+                    txtFilter.Text = string.Empty;
+                    return;
+                }
+            }
+            catch
+            {
+                // Fall back to normal filtering on any unexpected error
+            }
+
+            // Restart debounce timer to refresh view on idle
+            try
+            {
+                m_filterTimer.Stop();
+                m_filterTimer.Start();
+            }
+            catch
+            {
+                // ignore timer errors and fallback to immediate display
+                DisplayAttributes();
+            }
+        }
+
+        private void AttributeSelectionForm_FormClosed(object sender, FormClosedEventArgs e)
+        {
+            try
+            {
+                m_filterTimer?.Stop();
+                m_filterTimer?.Dispose();
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private bool TrySelectAttributesFromPaste(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text) || !text.Contains(","))
+            {
+                return false;
+            }
+
+            // Split the pasted text into tokens and normalize to lower-case logical names
+            var tokens = text.Split(',')
+                             .Select(t => t.Trim())
+                             .Where(t => !string.IsNullOrEmpty(t))
+                             .Select(t => t.ToLowerInvariant())
+                             .ToArray();
+
+            if (tokens.Length == 0)
+            {
+                return false;
+            }
+
+            // Find matching items from the complete attribute list (not just the filtered view)
+            var matched = m_attributesList.Where(i => tokens.Contains(i.Name)).ToList();
+
+            if (matched.Count == 0)
+            {
+                // No matches found: do not interfere with normal filtering
+                return false;
+            }
+
+            // Replace current selection with the pasted selection: uncheck all then check matched
+            lsvAttributes.ItemChecked -= lsvAttributes_ItemChecked;
+            try
+            {
+                var matchedNames = new HashSet<string>(matched.Select(i => i.Name));
+                foreach (var item in m_attributesList)
+                {
+                    item.Checked = matchedNames.Contains(item.Name);
+                }
+            }
+            finally
+            {
+                lsvAttributes.ItemChecked += lsvAttributes_ItemChecked;
+            }
+
+            RefreshCurrentAndCounts();
+
+            // Ensure the UI displays the attributes (in case none were visible before)
+            DisplayAttributes();
+
+            return true;
         }
 
         #endregion Private Methods

@@ -730,9 +730,6 @@ namespace Xrm.Sdk.PluginRegistration.Wrappers
             sdkStep.SdkMessageId = new EntityReference();
             sdkStep.SdkMessageId.LogicalName = SdkMessage.EntityLogicalName;
 
-            sdkStep.SdkMessageFilterId = new EntityReference();
-            sdkStep.SdkMessageFilterId.LogicalName = SdkMessageFilter.EntityLogicalName;
-
             if (MessageId == Guid.Empty)
             {
                 sdkStep.SdkMessageId = null;
@@ -741,13 +738,18 @@ namespace Xrm.Sdk.PluginRegistration.Wrappers
             {
                 sdkStep.SdkMessageId.Id = MessageId;
             }
-            if (MessageEntityId == Guid.Empty)
+
+            if (MessageEntityId != Guid.Empty)
             {
-                sdkStep.SdkMessageFilterId = null;
+                sdkStep.SdkMessageFilterId = new EntityReference(SdkMessageFilter.EntityLogicalName, MessageEntityId);
             }
-            else
+            else if (StepId != Guid.Empty)
             {
-                sdkStep.SdkMessageFilterId.Id = MessageEntityId;
+                // Update case: explicit clear of sdkmessagefilterid when transitioning to "none"
+                // This ensures any existing SdkMessageFilter reference on the step is removed.
+                // For create cases (StepId == Guid.Empty) we continue to omit the field entirely
+                // to avoid triggering Dataverse dependency calculation errors for some orgs.
+                sdkStep.SdkMessageFilterId = null;
             }
             sdkStep.ImpersonatingUserId = new EntityReference();
             sdkStep.ImpersonatingUserId.LogicalName = SystemUser.EntityLogicalName;
@@ -767,14 +769,17 @@ namespace Xrm.Sdk.PluginRegistration.Wrappers
             sdkStep.SupportedDeployment = new OptionSetValue();
             sdkStep.SupportedDeployment.Value = (int)Deployment;
 
-            if (string.IsNullOrEmpty(FilteringAttributes))
-            {
-                sdkStep.FilteringAttributes = string.Empty;
-            }
-            else
+            if (!string.IsNullOrEmpty(FilteringAttributes))
             {
                 sdkStep.FilteringAttributes = FilteringAttributes;
             }
+            else if (StepId != Guid.Empty)
+            {
+                // Update: explicitly clear filtering attributes so existing values are removed
+                sdkStep.FilteringAttributes = string.Empty;
+            }
+            // Create with no filtering attributes: omit the field entirely to avoid
+            // triggering Dataverse dependency calculation on the entity type code
 
             sdkStep.AsyncAutoDelete = DeleteAsyncOperationIfSuccessful;
 
